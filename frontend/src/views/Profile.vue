@@ -9,7 +9,7 @@
 						<div class="flex flex-row items-center">
 							<Button
 								variant="ghost"
-								class="!pl-0 hover:bg-white"
+								class="!ps-0 hover:bg-white"
 								@click="router.back()"
 							>
 								<FeatherIcon name="chevron-left" class="h-5 w-5" />
@@ -284,7 +284,7 @@ const logout = async () => {
 	try {
 		await session.logout.submit()
 	} catch (e) {
-		const msg = "An error occurred while attempting to log out!"
+		const msg = __("An error occurred while attempting to log out!")
 		console.error(msg, e)
 		showErrorAlert(msg)
 	}

@@ -2,6 +2,7 @@
 # See license.txt
 
 import frappe
+from frappe.permissions import add_user_permission
 from frappe.utils import add_years, cstr, date_diff, get_first_day, nowdate
 from frappe.utils.make_random import get_random
 
@@ -20,7 +21,7 @@ from hrms.payroll.doctype.salary_slip.test_salary_slip import (
 )
 from hrms.payroll.doctype.salary_structure.salary_structure import make_salary_slip
 from hrms.tests.test_utils import create_employee_grade
-from hrms.tests.utils import HRMSTestSuite
+from hrms.tests.utils import HRMSTestSuite, make_user
 
 
 class TestSalaryStructure(HRMSTestSuite):
@@ -92,10 +93,11 @@ class TestSalaryStructure(HRMSTestSuite):
 		employee = "test_assign_structure@salary.com"
 		employee_doc_name = make_employee(employee, company="_Test Company")
 		# clear the already assigned structures
-		frappe.db.sql(
-			"""delete from `tabSalary Structure Assignment` where employee=%s and salary_structure=%s """,
-			("test_assign_structure@salary.com", salary_structure.name),
-		)
+		ssa = frappe.qb.DocType("Salary Structure Assignment")
+		frappe.qb.from_(ssa).delete().where(
+			(ssa.employee == "test_assign_structure@salary.com")
+			& (ssa.salary_structure == salary_structure.name)
+		).run()
 		# test structure_assignment
 		salary_structure.assign_salary_structure(
 			employee=employee_doc_name, from_date="2013-01-01", base=5000, variable=200
@@ -106,6 +108,25 @@ class TestSalaryStructure(HRMSTestSuite):
 		self.assertEqual(salary_structure_assignment.docstatus, 1)
 		self.assertEqual(salary_structure_assignment.base, 5000)
 		self.assertEqual(salary_structure_assignment.variable, 200)
+
+	def test_assign_salary_structure_respects_employee_user_permissions(self):
+		salary_structure = make_salary_structure(
+			"Salary Structure Sample", "Monthly", currency="INR", company="_Test Company"
+		)
+		permitted = make_employee("test_ssa_permitted@salary.com", company="_Test Company")
+		restricted = make_employee("test_ssa_restricted@salary.com", company="_Test Company")
+		hr_user = make_user("test_ssa_hr_user@salary.com", "HR User")
+		add_user_permission("Employee", permitted, hr_user)
+
+		frappe.set_user(hr_user)
+		salary_structure.assign_salary_structure(employee=restricted, from_date="2013-01-01", base=5000)
+		salary_structure.assign_salary_structure(from_date="2013-01-01", base=5000, variable=200)
+		frappe.set_user("Administrator")
+
+		self.assertTrue(
+			frappe.db.exists("Salary Structure Assignment", {"employee": permitted, "docstatus": 1})
+		)
+		self.assertFalse(frappe.db.exists("Salary Structure Assignment", {"employee": restricted}))
 
 	def test_employee_grade_defaults(self):
 		salary_structure = make_salary_structure(
@@ -130,6 +151,34 @@ class TestSalaryStructure(HRMSTestSuite):
 			"Salary Structure Multi Currency", "Monthly", currency="USD", company="_Test Company"
 		)
 		self.assertEqual(sal_struct.currency, "USD")
+
+	def test_missing_values_set_on_employer_contributions(self):
+		component = "Test Structure Employer PF"
+		if frappe.db.exists("Salary Component", component):
+			frappe.delete_doc("Salary Component", component, force=True)
+
+		frappe.get_doc(
+			{
+				"doctype": "Salary Component",
+				"salary_component": component,
+				"salary_component_abbr": "TSTEPF",
+				"type": "Employer Contribution",
+				"depends_on_payment_days": 0,
+				"amount": 6000,
+			}
+		).insert()
+
+		sal_struct = make_salary_structure(
+			"Salary Structure Employer Contribution Defaults",
+			"Monthly",
+			company="_Test Company",
+			currency="INR",
+			other_details={"employer_contributions": [{"salary_component": component, "abbr": "TSTEPF"}]},
+		)
+
+		row = sal_struct.employer_contributions[0]
+		self.assertEqual(row.depends_on_payment_days, 0)
+		self.assertEqual(row.amount, 6000)
 
 
 def make_salary_structure(
@@ -240,7 +289,8 @@ def create_salary_structure_assignment(
 		currency = "INR"
 
 	if not allow_duplicate and frappe.db.exists("Salary Structure Assignment", {"employee": employee}):
-		frappe.db.sql("""delete from `tabSalary Structure Assignment` where employee=%s""", (employee))
+		ssa = frappe.qb.DocType("Salary Structure Assignment")
+		frappe.qb.from_(ssa).delete().where(ssa.employee == employee).run()
 
 	if not payroll_period:
 		payroll_period = create_payroll_period(company="_Test Company")
